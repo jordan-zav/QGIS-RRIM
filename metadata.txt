@@ -1,0 +1,17 @@
+[general]
+name=QGIS-RRIM
+qgisMinimumVersion=3.28
+description=Generating RRIM base layers in QGIS (Slope and Differential Openness)
+about=Implements the Red Relief Image Map (RRIM) method proposed by Chiba, Kaneta & Suzuki (2007) for high-detail terrain visualization and geomorphological interpretation. The plugin generates slope and differential openness layers as the fundamental inputs for RRIM mapping, optimized for high-resolution DEMs, particularly LiDAR-derived datasets.
+version=1.0.0
+author=Jordan Zavaleta
+email=jordanzr10@gmail.com
+repository=https://github.com/jordan-zav/QGIS-RRIM
+tracker=
+homepage=https://github.com/jordan-zav/QGIS-RRIM
+experimental=False
+deprecated=False
+icon=icon.png
+category=Raster
+tags=RRIM,geomorphometry,terrain_analysis,DEM,LiDAR,geomorphology
+license=MIT
