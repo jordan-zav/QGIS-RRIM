@@ -1,5 +1,6 @@
 # QGIS-RRIM
 Generating RRIM Base Layers in QGIS (Slope & Differential Openness)
+
 QGIS-RRIM is a QGIS plugin that implements the Red Relief Image Map (RRIM) technique proposed by Chiba, Kaneta & Suzuki (2007), providing tools for high-detail geomorphological and morphostructural terrain analysis using Digital Elevation Models (DEMs).
 
 Citation
