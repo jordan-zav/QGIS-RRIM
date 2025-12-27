@@ -15,4 +15,4 @@ icon=icon.png
 category=Raster
 tags=RRIM,geomorphometry,terrain_analysis,DEM,LiDAR,geomorphology
 license=MIT
-
+experimental=False
