@@ -1,13 +1,16 @@
 from qgis.core import QgsProcessingProvider
-from .rrim_algorithm import RRIMAlgorithm
 from qgis.PyQt.QtGui import QIcon
 import os
+
+from .rrim_algorithm import RRIMGenerator
+from .rrim_rgb_composer import RRIMRGBComposer
 
 
 class RRIMProvider(QgsProcessingProvider):
 
     def loadAlgorithms(self):
-        self.addAlgorithm(RRIMAlgorithm())
+        self.addAlgorithm(RRIMGenerator())
+        self.addAlgorithm(RRIMRGBComposer())
 
     def id(self):
         return "qgis_rrim"
