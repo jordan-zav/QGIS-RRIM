@@ -71,7 +71,7 @@ Features:
 
 Original method:
 
-Chiba, T., Kaneta, S., & Suzuki, Y. (2007). Red relief image map: New visualization method for three dimensional data.
+Chiba, T., Kaneta, S., & Suzuki, Y. (2009). Red relief image map: New visualization method for three dimensional data.
 ISPRS Journal of Photogrammetry and Remote Sensing, 62(2), 107–116.
 
 ---
