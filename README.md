@@ -1,6 +1,6 @@
 # QGIS-RRIM
 
-QGIS-RRIM is a QGIS plugin that implements the Red Relief Image Map (RRIM) technique proposed by Chiba, Kaneta & Suzuki (2009). It provides a streamlined workflow for high-resolution geomorphological and morphostructural analysis using Digital Elevation Models (DEMs).
+QGIS-RRIM is a QGIS plugin that implements the Red Relief Image Map (RRIM) technique proposed by Chiba, Kaneta & Suzuki (2008). It provides a streamlined workflow for high-resolution geomorphological and morphostructural analysis using Digital Elevation Models (DEMs).
 
 The plugin automates the generation, normalization, and visualization of terrain derivatives required to produce RRIM outputs directly within QGIS.
 
