@@ -1,4 +1,13 @@
-# ⚖️ Licencia / License (Dual Licensing)
+# QGIS-RRIM
+
+QGIS-RRIM is a QGIS plugin that implements the Red Relief Image Map (RRIM) technique proposed by Chiba, Kaneta & Suzuki (2008). It provides a streamlined workflow for high-resolution geomorphological and morphostructural analysis using Digital Elevation Models (DEMs).
+
+The plugin automates the generation, normalization, and visualization of terrain derivatives required to produce RRIM outputs directly within QGIS.
+
+---
+
+
+## ⚖️ License (Dual Licensing)
 
 This project is distributed under a **Dual Licensing** model:
 
@@ -6,13 +15,6 @@ This project is distributed under a **Dual Licensing** model:
 2. **Commercial / Private Use (Commercial License):** If you wish to integrate this code into proprietary, closed-source, or commercial software (without the obligation to open your own source code under the GPLv3), you must acquire an exclusive commercial license. Please contact the author to negotiate terms.
 
 For more details, see the [LICENSE](LICENSE) file.
-
----
-# QGIS-RRIM
-
-QGIS-RRIM is a QGIS plugin that implements the Red Relief Image Map (RRIM) technique proposed by Chiba, Kaneta & Suzuki (2008). It provides a streamlined workflow for high-resolution geomorphological and morphostructural analysis using Digital Elevation Models (DEMs).
-
-The plugin automates the generation, normalization, and visualization of terrain derivatives required to produce RRIM outputs directly within QGIS.
 
 ---
 
@@ -101,4 +103,4 @@ QGIS Plugin Repository. MIT License.
 
 ## License
 
-This project is licensed under the GNU GPLv3 and the Dual Licensing agreement described at the beginning of this document. See the [LICENSE](LICENSE) file for more details.
+This project is licensed under the GNU GPLv3 and the Dual Licensing agreement described above. See the [LICENSE](LICENSE) file for more details.
