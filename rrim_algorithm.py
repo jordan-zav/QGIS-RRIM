@@ -141,7 +141,7 @@ class RRIMGenerator(QgsProcessingAlgorithm):
             "-----------------------------------------------------------<br>"
             "&copy; 2025 <a href='https://linkedin.com/in/jordan-zav'><b>Zavaleta, J.</b></a><br>"
             "<i>Geological Engineering Undergraduate Student at UNI</i><br>"
-            "Released under the MIT License"
+            "Released under the GNU GPLv3 License"
         )
 
     def icon(self):
@@ -247,21 +247,16 @@ class RRIMGenerator(QgsProcessingAlgorithm):
         details.setPostProcessor(_LayerNamePostProcessor(label, style_mode))
         context.addLayerToLoadOnCompletion(path, details)
 
-    def _add_styled_layer_to_project(self, path, label, style_mode):
-        layer = QgsRasterLayer(path, label)
-        if not layer.isValid():
-            raise QgsProcessingException(f"Failed to load {label} into the project.")
-
-        post_processor = _LayerNamePostProcessor(label, style_mode)
-        post_processor.postProcessLayer(layer, None, None)
-        QgsProject.instance().addMapLayer(layer)
-
     def processAlgorithm(self, parameters, context, feedback):
         feedback = QgsProcessingMultiStepFeedback(4, feedback)
 
         raster_layer = self.parameterAsRasterLayer(parameters, self.INPUT_RASTER, context)
         if raster_layer is None or raster_layer.bandCount() != 1:
             raise QgsProcessingException("Input raster must be a valid single-band DEM.")
+        if not raster_layer.crs().isValid() or raster_layer.crs().isGeographic():
+            raise QgsProcessingException(
+                "Input DEM must use a valid projected CRS whose horizontal units match the elevation units."
+            )
 
         raster = parameters[self.INPUT_RASTER]
         raster_path = raster_layer.source()
@@ -275,6 +270,20 @@ class RRIMGenerator(QgsProcessingAlgorithm):
 
         op_path = os.path.join(temp_dir, f"rrim_op_{uid}.tif")
         on_path = os.path.join(temp_dir, f"rrim_on_{uid}.tif")
+        materialized_input_path = None
+        if not os.path.isfile(raster_path):
+            materialized_input_path = os.path.join(temp_dir, f"rrim_input_{uid}.tif")
+            raster_path = processing.run(
+                "gdal:translate",
+                {
+                    "INPUT": raster_layer,
+                    "OUTPUT": materialized_input_path,
+                },
+                context=context,
+                feedback=feedback,
+                is_child_algorithm=True,
+            )["OUTPUT"]
+
         slope_norm_path = None
         diff_norm_path = None
         if auto_normalize:
@@ -291,25 +300,34 @@ class RRIMGenerator(QgsProcessingAlgorithm):
                 "rrim_diff_norm.tif"
             )
 
-        feedback.setCurrentStep(0)
-        compute_openness_raster(
-            raster_path,
-            op_path,
-            radius=10,
-            num_directions=16,
-            invert=False,
-            feedback=feedback,
-        )
+        try:
+            feedback.setCurrentStep(0)
+            compute_openness_raster(
+                raster_path,
+                op_path,
+                radius=10,
+                num_directions=16,
+                invert=False,
+                feedback=feedback,
+            )
 
-        feedback.setCurrentStep(1)
-        compute_openness_raster(
-            raster_path,
-            on_path,
-            radius=10,
-            num_directions=16,
-            invert=True,
-            feedback=feedback,
-        )
+            feedback.setCurrentStep(1)
+            compute_openness_raster(
+                raster_path,
+                on_path,
+                radius=10,
+                num_directions=16,
+                invert=True,
+                feedback=feedback,
+            )
+        except InterruptedError as error:
+            for temp_path in (op_path, on_path, materialized_input_path):
+                if temp_path and os.path.exists(temp_path):
+                    try:
+                        os.remove(temp_path)
+                    except OSError:
+                        pass
+            raise QgsProcessingException(str(error)) from error
 
         feedback.setCurrentStep(2)
         op_layer = QgsRasterLayer(op_path, "OP")
@@ -379,9 +397,9 @@ class RRIMGenerator(QgsProcessingAlgorithm):
                 feedback
             )
 
-        for temp_path in (op_path, on_path):
+        for temp_path in (op_path, on_path, materialized_input_path):
             try:
-                if os.path.exists(temp_path):
+                if temp_path and os.path.exists(temp_path):
                     os.remove(temp_path)
             except PermissionError:
                 feedback.pushInfo(f"Could not remove temporary file in use: {temp_path}")
@@ -389,13 +407,17 @@ class RRIMGenerator(QgsProcessingAlgorithm):
         self._register_output_layer(context, slope, self.OUT_SLOPE, "Slope")
         self._register_output_layer(context, diff, self.OUT_DIFF, "Differential Openness")
         if auto_normalize:
-            self._add_styled_layer_to_project(
+            self._register_output_layer(
+                context,
                 slope_norm,
+                self.OUT_SLOPE_NORM,
                 "Normalized Slope",
                 "slope_norm"
             )
-            self._add_styled_layer_to_project(
+            self._register_output_layer(
+                context,
                 diff_norm,
+                self.OUT_DIFF_NORM,
                 "Normalized Differential Openness",
                 "diff_norm"
             )

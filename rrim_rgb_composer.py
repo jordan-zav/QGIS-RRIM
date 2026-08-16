@@ -36,6 +36,7 @@ from qgis.core import (
 )
 
 from qgis.PyQt.QtGui import QIcon
+from qgis.PyQt.QtCore import QSize
 from PyQt5.QtGui import QColor, QPainter
 from osgeo import gdal, osr
 
@@ -147,6 +148,7 @@ def export_rrim_geotiff(slope_layer, do_layer, output_path, slope_max=90.0, do_m
         exporter = QgsLayoutExporter(layout)
         image_settings = QgsLayoutExporter.ImageExportSettings()
         image_settings.cropToContents = False
+        image_settings.imageSize = QSize(width, height)
         result = exporter.exportToImage(temp_render, image_settings)
         if result != QgsLayoutExporter.Success:
             raise QgsProcessingException("Failed to render RRIM RGB image.")
@@ -154,6 +156,13 @@ def export_rrim_geotiff(slope_layer, do_layer, output_path, slope_max=90.0, do_m
         ds_src = gdal.Open(temp_render)
         if ds_src is None:
             raise QgsProcessingException("Failed to open temporary RRIM RGB image.")
+        if ds_src.RasterXSize != width or ds_src.RasterYSize != height:
+            actual_size = (ds_src.RasterXSize, ds_src.RasterYSize)
+            ds_src = None
+            raise QgsProcessingException(
+                f"RRIM render size mismatch: expected {width}x{height}, "
+                f"got {actual_size[0]}x{actual_size[1]}."
+            )
 
         ds_dst = gdal.Translate(
             output_path,
@@ -239,7 +248,7 @@ class RRIMRGBComposer(QgsProcessingAlgorithm):
             "-----------------------------------------------------------<br>"
             "&copy; 2025 <a href='https://linkedin.com/in/jordan-zav'><b>Zavaleta, J.</b></a><br>"
             "<i>Geological Engineering Undergraduate Student at UNI</i><br>"
-            "Released under the MIT License"
+            "Released under the GNU GPLv3 License"
         )
 
     def icon(self):

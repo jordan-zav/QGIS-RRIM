@@ -3,34 +3,42 @@ Internal openness calculation utilities for QGIS-RRIM.
 """
 
 import math
+import os
 
 import numpy as np
-from osgeo import gdal
 
 
 def _direction_offsets(radius, num_directions, pixel_width, pixel_height):
+    if radius < 1:
+        raise ValueError("radius must be at least 1 pixel")
+    if num_directions < 1:
+        raise ValueError("num_directions must be positive")
+    if pixel_width <= 0 or pixel_height <= 0:
+        raise ValueError("pixel dimensions must be positive")
+
+    radial_samples = [1.0 + sample / 3.0 for sample in range((radius - 1) * 3 + 1)]
+
     for index in range(num_directions):
         angle = (2.0 * math.pi * index) / num_directions
-        offsets = []
-        seen = set()
+        offsets = {}
 
-        for step in range(1, radius + 1):
-            dx = int(round(math.cos(angle) * step))
-            dy = int(round(math.sin(angle) * step))
+        for radial_distance in radial_samples:
+            dx = int(round(math.cos(angle) * radial_distance))
+            dy = int(round(math.sin(angle) * radial_distance))
             if dx == 0 and dy == 0:
                 continue
-            if (dy, dx) in seen:
-                continue
 
-            seen.add((dy, dx))
             distance = math.hypot(dx * pixel_width, dy * pixel_height)
             if distance == 0:
                 continue
 
-            offsets.append((dy, dx, distance))
+            offsets[(dy, dx)] = distance
 
         if offsets:
-            yield offsets
+            yield sorted(
+                ((dy, dx, distance) for (dy, dx), distance in offsets.items()),
+                key=lambda item: item[2],
+            )
 
 
 def _shift_array(array, dy, dx):
@@ -56,33 +64,27 @@ def _shift_array(array, dy, dx):
 def _calculate_openness(dem_array, radius, num_directions, pixel_width, pixel_height):
     directions = list(_direction_offsets(radius, num_directions, pixel_width, pixel_height))
     openness_sum = np.zeros(dem_array.shape, dtype=np.float32)
-    direction_count = np.zeros(dem_array.shape, dtype=np.uint16)
+    minimum_horizon = np.float32(np.degrees(np.arctan(-1000.0)))
+    center_is_valid = ~np.isnan(dem_array)
 
     for offsets in directions:
-        max_horizon = np.full(dem_array.shape, -np.inf, dtype=np.float32)
-        valid_samples = np.zeros(dem_array.shape, dtype=bool)
+        max_horizon = np.full(dem_array.shape, minimum_horizon, dtype=np.float32)
 
         for dy, dx, distance in offsets:
             shifted = _shift_array(dem_array, dy, dx)
-            sample_mask = ~np.isnan(shifted)
-            if not sample_mask.any():
-                continue
-
             horizon_angle = np.degrees(np.arctan((shifted - dem_array) / distance))
-            max_horizon = np.where(sample_mask, np.maximum(max_horizon, horizon_angle), max_horizon)
-            valid_samples |= sample_mask
+            max_horizon = np.fmax(max_horizon, horizon_angle)
 
-        if valid_samples.any():
-            openness_sum = np.where(valid_samples, openness_sum + (90.0 - max_horizon), openness_sum)
-            direction_count += valid_samples.astype(np.uint16)
+        openness_sum += 90.0 - max_horizon
 
-    openness = np.full(dem_array.shape, np.nan, dtype=np.float32)
-    valid_cells = direction_count > 0
-    openness[valid_cells] = (openness_sum[valid_cells] / direction_count[valid_cells]).astype(np.float32)
+    openness = (openness_sum / len(directions)).astype(np.float32)
+    openness[~center_is_valid] = np.nan
     return openness
 
 
 def compute_openness_raster(input_path, output_path, radius=10, num_directions=16, invert=False, feedback=None, block_size=512):
+    from osgeo import gdal
+
     dataset = gdal.Open(input_path, gdal.GA_ReadOnly)
     if dataset is None:
         raise RuntimeError(f"Could not open DEM: {input_path}")
@@ -91,8 +93,12 @@ def compute_openness_raster(input_path, output_path, radius=10, num_directions=1
     nodata_value = band.GetNoDataValue()
 
     geotransform = dataset.GetGeoTransform()
-    pixel_width = abs(geotransform[1]) if geotransform else 1.0
-    pixel_height = abs(geotransform[5]) if geotransform and geotransform[5] != 0 else pixel_width
+    if geotransform:
+        pixel_width = math.hypot(geotransform[1], geotransform[2])
+        pixel_height = math.hypot(geotransform[4], geotransform[5])
+    else:
+        pixel_width = 1.0
+        pixel_height = 1.0
 
     driver = gdal.GetDriverByName("GTiff")
     output = driver.Create(
@@ -115,14 +121,17 @@ def compute_openness_raster(input_path, output_path, radius=10, num_directions=1
     y_size = dataset.RasterYSize
     total_blocks = max(math.ceil(x_size / block_size) * math.ceil(y_size / block_size), 1)
     processed_blocks = 0
+    canceled = False
 
     for yoff in range(0, y_size, block_size):
         if feedback is not None and feedback.isCanceled():
+            canceled = True
             break
 
         rows = min(block_size, y_size - yoff)
         for xoff in range(0, x_size, block_size):
             if feedback is not None and feedback.isCanceled():
+                canceled = True
                 break
 
             cols = min(block_size, x_size - xoff)
@@ -137,6 +146,18 @@ def compute_openness_raster(input_path, output_path, radius=10, num_directions=1
             array = band.ReadAsArray(read_xoff, read_yoff, read_cols, read_rows).astype(np.float32)
             if nodata_value is not None:
                 array[array == nodata_value] = np.nan
+
+            pad_top = max(0, radius - yoff)
+            pad_left = max(0, radius - xoff)
+            pad_bottom = max(0, yoff + rows + radius - y_size)
+            pad_right = max(0, xoff + cols + radius - x_size)
+            if any((pad_top, pad_bottom, pad_left, pad_right)):
+                array = np.pad(
+                    array,
+                    ((pad_top, pad_bottom), (pad_left, pad_right)),
+                    mode="reflect",
+                )
+
             if invert:
                 array *= -1.0
 
@@ -148,8 +169,8 @@ def compute_openness_raster(input_path, output_path, radius=10, num_directions=1
                 pixel_height=pixel_height,
             )
 
-            crop_y = yoff - read_yoff
-            crop_x = xoff - read_xoff
+            crop_y = yoff - read_yoff + pad_top
+            crop_x = xoff - read_xoff + pad_left
             out_band.WriteArray(openness[crop_y:crop_y + rows, crop_x:crop_x + cols], xoff, yoff)
 
             processed_blocks += 1
@@ -161,5 +182,12 @@ def compute_openness_raster(input_path, output_path, radius=10, num_directions=1
     output.FlushCache()
     output = None
     dataset = None
+
+    if canceled:
+        try:
+            if os.path.exists(output_path):
+                os.remove(output_path)
+        finally:
+            raise InterruptedError("Openness calculation was canceled.")
 
     return output_path

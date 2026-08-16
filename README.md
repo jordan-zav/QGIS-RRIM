@@ -91,7 +91,7 @@ ISPRS Journal of Photogrammetry and Remote Sensing, 62(2), 107–116.
 Software implementation:
 
 Zavaleta, J. (2026). QGIS-RRIM: Generate RRIM terrain layers and compose RRIM RGB outputs in QGIS.
-QGIS Plugin Repository. MIT License.
+QGIS Plugin Repository. GNU GPLv3 License.
 
 ---
 
