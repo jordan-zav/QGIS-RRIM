@@ -26,9 +26,13 @@ class QGISRRIM:
         self.iface = iface
         self.provider = None
 
+    def initProcessing(self):
+        if self.provider is None:
+            self.provider = RRIMProvider()
+            QgsApplication.processingRegistry().addProvider(self.provider)
+
     def initGui(self):
-        self.provider = RRIMProvider()
-        QgsApplication.processingRegistry().addProvider(self.provider)
+        self.initProcessing()
 
     def unload(self):
         if self.provider:

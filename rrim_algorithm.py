@@ -30,7 +30,6 @@ from qgis.core import (
     QgsProcessingParameterRasterLayer,
     QgsProcessingParameterRasterDestination,
     QgsProcessingParameterBoolean,
-    QgsProcessingOutputRasterLayer,
     QgsProcessingLayerPostProcessorInterface,
     QgsProcessingMultiStepFeedback,
     QgsProcessingException,
@@ -44,7 +43,9 @@ from qgis.core import (
 
 from qgis.PyQt.QtGui import QIcon
 from PyQt5.QtGui import QColor, QPainter
-import processing
+from qgis import processing
+
+from .rrim_openness import compute_openness_raster
 
 
 def _build_renderer(layer, items, minimum=None, maximum=None):
@@ -124,7 +125,7 @@ class RRIMGenerator(QgsProcessingAlgorithm):
             "Generates the geomorphometric products required for "
             "Red Relief Image Map (RRIM):<br><br>"
             "&bull; Slope (native QGIS)<br>"
-            "&bull; Differential Openness = (Positive &minus; Negative) / 2 (RVT)<br><br>"
+            "&bull; Differential Openness = (Positive &minus; Negative) / 2 (internal algorithm)<br><br>"
             "Optional normalization additionally creates display-ready copies:<br>"
             "&bull; Normalized Slope: Reds, 0 to 90<br>"
             "&bull; Normalized Differential Openness: Grays, -50 to 50<br><br>"
@@ -176,54 +177,23 @@ class RRIMGenerator(QgsProcessingAlgorithm):
             )
         )
 
-        self.addOutput(
-            QgsProcessingOutputRasterLayer(
+        self.addParameter(
+            QgsProcessingParameterRasterDestination(
                 self.OUT_SLOPE_NORM,
-                "Slope_Norm"
+                "Normalized Slope",
+                optional=True,
+                createByDefault=True
             )
         )
 
-        self.addOutput(
-            QgsProcessingOutputRasterLayer(
+        self.addParameter(
+            QgsProcessingParameterRasterDestination(
                 self.OUT_DIFF_NORM,
-                "Differential Openness_Norm"
+                "Normalized Differential Openness",
+                optional=True,
+                createByDefault=True
             )
         )
-
-    def _copy_output(self, source_path, layer_name, output_path, context, feedback):
-        layer = QgsRasterLayer(source_path, layer_name)
-        if not layer.isValid():
-            raise QgsProcessingException(f"Failed to load {layer_name} for normalized copy.")
-
-        try:
-            provider = layer.dataProvider()
-            extent = layer.extent()
-            extent_str = (
-                f"{extent.xMinimum()},{extent.xMaximum()},"
-                f"{extent.yMinimum()},{extent.yMaximum()}"
-            )
-            cell_size = min(
-                abs(layer.rasterUnitsPerPixelX()),
-                abs(layer.rasterUnitsPerPixelY())
-            )
-            result = processing.run(
-                "native:rastercalc",
-                {
-                    "LAYERS": [layer],
-                    "EXPRESSION": f'"{layer_name}@1"',
-                    "EXTENT": extent_str,
-                    "CELL_SIZE": cell_size,
-                    "CRS": layer.crs().authid() or source_path,
-                    "OUTPUT": output_path
-                },
-                context=context,
-                feedback=feedback,
-                is_child_algorithm=True
-            )["OUTPUT"]
-        finally:
-            del layer
-
-        return result
 
     def _clamp_output(self, source_path, layer_name, expression, output_path, context, feedback):
         layer = QgsRasterLayer(source_path, layer_name)
@@ -259,6 +229,12 @@ class RRIMGenerator(QgsProcessingAlgorithm):
 
         return result
 
+    def _normalized_output_path(self, parameters, output_name, context, filename):
+        return (
+            self.parameterAsOutputLayer(parameters, output_name, context)
+            or QgsProcessingUtils.generateTempFilename(filename)
+        )
+
     def _register_output_layer(self, context, path, output_name, label, style_mode=None):
         if not path:
             return
@@ -288,6 +264,7 @@ class RRIMGenerator(QgsProcessingAlgorithm):
             raise QgsProcessingException("Input raster must be a valid single-band DEM.")
 
         raster = parameters[self.INPUT_RASTER]
+        raster_path = raster_layer.source()
         auto_normalize = self.parameterAsBool(parameters, self.AUTO_NORMALIZE, context)
 
         slope_norm = None
@@ -298,43 +275,40 @@ class RRIMGenerator(QgsProcessingAlgorithm):
 
         op_path = os.path.join(temp_dir, f"rrim_op_{uid}.tif")
         on_path = os.path.join(temp_dir, f"rrim_on_{uid}.tif")
-        slope_norm_path = os.path.join(temp_dir, f"rrim_slope_norm_{uid}.tif")
-        diff_norm_path = os.path.join(temp_dir, f"rrim_diff_norm_{uid}.tif")
+        slope_norm_path = None
+        diff_norm_path = None
+        if auto_normalize:
+            slope_norm_path = self._normalized_output_path(
+                parameters,
+                self.OUT_SLOPE_NORM,
+                context,
+                "rrim_slope_norm.tif"
+            )
+            diff_norm_path = self._normalized_output_path(
+                parameters,
+                self.OUT_DIFF_NORM,
+                context,
+                "rrim_diff_norm.tif"
+            )
 
         feedback.setCurrentStep(0)
-        processing.run(
-            "rvt:rvt_opns",
-            {
-                "INPUT": raster,
-                "VE_FACTOR": 1,
-                "RADIUS": 10,
-                "NUM_DIRECTIONS": 16,
-                "NOISE_REMOVE": 0,
-                "OPNS_TYPE": 0,
-                "SAVE_AS_8BIT": False,
-                "OUTPUT": op_path
-            },
-            context=context,
+        compute_openness_raster(
+            raster_path,
+            op_path,
+            radius=10,
+            num_directions=16,
+            invert=False,
             feedback=feedback,
-            is_child_algorithm=True
         )
 
         feedback.setCurrentStep(1)
-        processing.run(
-            "rvt:rvt_opns",
-            {
-                "INPUT": raster,
-                "VE_FACTOR": 1,
-                "RADIUS": 10,
-                "NUM_DIRECTIONS": 16,
-                "NOISE_REMOVE": 0,
-                "OPNS_TYPE": 1,
-                "SAVE_AS_8BIT": False,
-                "OUTPUT": on_path
-            },
-            context=context,
+        compute_openness_raster(
+            raster_path,
+            on_path,
+            radius=10,
+            num_directions=16,
+            invert=True,
             feedback=feedback,
-            is_child_algorithm=True
         )
 
         feedback.setCurrentStep(2)
@@ -396,9 +370,10 @@ class RRIMGenerator(QgsProcessingAlgorithm):
         )["OUTPUT"]
 
         if auto_normalize:
-            slope_norm = self._copy_output(
+            slope_norm = self._clamp_output(
                 slope,
                 "Slope",
+                'if("Slope@1" > 90, 90, if("Slope@1" < 0, 0, "Slope@1"))',
                 slope_norm_path,
                 context,
                 feedback

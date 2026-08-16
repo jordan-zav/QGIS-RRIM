@@ -35,9 +35,9 @@ This combination allows for improved interpretation of:
 
 ## ⚙️ Dependency
 
-This plugin requires the Relief Visualization Toolbox (RVT) plugin.
+This plugin no longer depends on the Relief Visualization Toolbox (RVT) plugin.
 
-Differential openness is computed using RVT algorithms, which are not natively implemented in QGIS-RRIM.
+Differential openness is computed internally by QGIS-RRIM using a horizon-based positive and negative openness routine.
 
 ---
 
@@ -48,7 +48,7 @@ Differential openness is computed using RVT algorithms, which are not natively i
 Generates the required layers from a DEM:
 
 - Slope layer
-- Differential openness layer (via RVT)
+- Differential openness layer (internal algorithm)
 
 Features:
 - Automatic preprocessing workflow
@@ -100,7 +100,6 @@ QGIS Plugin Repository. MIT License.
 - Designed for geomorphology, structural geology, and remote sensing applications
 - Optimized for integration into QGIS-based workflows
 - Suitable for both regional and high-resolution terrain analysis
-
 ## License
 
 This project is licensed under the GNU GPLv3 and the Dual Licensing agreement described above. See the [LICENSE](LICENSE) file for more details.

@@ -89,10 +89,13 @@ def export_rrim_geotiff(slope_layer, do_layer, output_path, slope_max=90.0, do_m
     if do_layer is None or not do_layer.isValid():
         raise QgsProcessingException("Invalid differential openness layer for RRIM export.")
 
+    if slope_max <= 0 or do_min >= do_max:
+        raise QgsProcessingException("RRIM display ranges are invalid.")
+
     temp_dir = QgsProcessingUtils.tempFolder()
     uid = uuid.uuid4().hex
 
-    temp_png = os.path.join(temp_dir, f"rrim_rgb_{uid}.png")
+    temp_render = os.path.join(temp_dir, f"rrim_rgb_{uid}.tif")
 
     width = do_layer.width()
     height = do_layer.height()
@@ -100,6 +103,23 @@ def export_rrim_geotiff(slope_layer, do_layer, output_path, slope_max=90.0, do_m
 
     if width <= 0 or height <= 0:
         raise QgsProcessingException("Invalid raster dimensions for RRIM RGB export.")
+
+    slope_extent = slope_layer.extent()
+    extent_tolerance = max(abs(extent.width()), abs(extent.height()), 1.0) * 1e-9
+    if slope_layer.width() != width or slope_layer.height() != height:
+        raise QgsProcessingException("Slope and differential openness rasters must have matching dimensions.")
+    if slope_layer.crs() != do_layer.crs():
+        raise QgsProcessingException("Slope and differential openness rasters must use the same CRS.")
+    if any(
+        abs(left - right) > extent_tolerance
+        for left, right in (
+            (slope_extent.xMinimum(), extent.xMinimum()),
+            (slope_extent.xMaximum(), extent.xMaximum()),
+            (slope_extent.yMinimum(), extent.yMinimum()),
+            (slope_extent.yMaximum(), extent.yMaximum()),
+        )
+    ):
+        raise QgsProcessingException("Slope and differential openness rasters must have matching extents.")
 
     slope_renderer = slope_layer.renderer().clone() if slope_layer.renderer() else None
     do_renderer = do_layer.renderer().clone() if do_layer.renderer() else None
@@ -127,16 +147,21 @@ def export_rrim_geotiff(slope_layer, do_layer, output_path, slope_max=90.0, do_m
         exporter = QgsLayoutExporter(layout)
         image_settings = QgsLayoutExporter.ImageExportSettings()
         image_settings.cropToContents = False
-        result = exporter.exportToImage(temp_png, image_settings)
+        result = exporter.exportToImage(temp_render, image_settings)
         if result != QgsLayoutExporter.Success:
             raise QgsProcessingException("Failed to render RRIM RGB image.")
 
-        ds_src = gdal.Open(temp_png)
+        ds_src = gdal.Open(temp_render)
         if ds_src is None:
             raise QgsProcessingException("Failed to open temporary RRIM RGB image.")
 
-        driver = gdal.GetDriverByName("GTiff")
-        ds_dst = driver.CreateCopy(output_path, ds_src, 0, options=["COMPRESS=LZW"])
+        ds_dst = gdal.Translate(
+            output_path,
+            ds_src,
+            format="GTiff",
+            bandList=[1, 2, 3],
+            creationOptions=["COMPRESS=LZW", "TILED=YES"],
+        )
         if ds_dst is None:
             ds_src = None
             raise QgsProcessingException("Failed to create RRIM RGB GeoTIFF.")
@@ -173,8 +198,8 @@ def export_rrim_geotiff(slope_layer, do_layer, output_path, slope_max=90.0, do_m
         do_layer.triggerRepaint()
 
         try:
-            if os.path.exists(temp_png):
-                os.remove(temp_png)
+            if os.path.exists(temp_render):
+                os.remove(temp_render)
         except Exception:
             pass
 
