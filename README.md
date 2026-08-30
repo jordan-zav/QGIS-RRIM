@@ -1,105 +1,163 @@
+<div align="center">
+  <img src="icon.png" alt="QGIS-RRIM" width="112">
+
 # QGIS-RRIM
 
-QGIS-RRIM is a QGIS plugin that implements the Red Relief Image Map (RRIM) technique proposed by Chiba, Kaneta & Suzuki (2008). It provides a streamlined workflow for high-resolution geomorphological and morphostructural analysis using Digital Elevation Models (DEMs).
+**Red Relief Image Map generation directly in QGIS Processing**
 
-The plugin automates the generation, normalization, and visualization of terrain derivatives required to produce RRIM outputs directly within QGIS.
+Derive slope and differential openness from a projected DEM, apply consistent
+display ranges and export a georeferenced RRIM RGB GeoTIFF.
 
----
+[![Source 2.2.0](https://img.shields.io/badge/source-2.2.0-2563eb)](metadata.txt)
+[![Release 2.1.0](https://img.shields.io/github/v/release/jordan-zav/QGIS-RRIM?color=7c3aed)](https://github.com/jordan-zav/QGIS-RRIM/releases/latest)
+[![QGIS 3.28+](https://img.shields.io/badge/QGIS-3.28%2B-589632?logo=qgis&logoColor=white)](https://qgis.org/)
+[![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-0f766e)](LICENSE)
 
+</div>
 
-## ⚖️ License (Dual Licensing)
+> [!IMPORTANT]
+> QGIS-RRIM is a terrain-visualization tool. RRIM enhances morphology but does
+> not classify landforms or geological structures. Pixel size, vertical units,
+> openness radius and edge effects must be considered during interpretation.
 
-This project is distributed under a **Dual Licensing** model:
+## Workflow at a glance
 
-1. **Open Source Use (GNU GPLv3):** You can use, study, modify, and redistribute this software for free, provided that any modified version or derivative work is also 100% open source under the GNU GPLv3 license.
-2. **Commercial / Private Use (Commercial License):** If you wish to integrate this code into proprietary, closed-source, or commercial software (without the obligation to open your own source code under the GPLv3), you must acquire an exclusive commercial license. Please contact the author to negotiate terms.
+```text
+Single-band DEM in a projected CRS
+                 │
+                 ▼
+ Slope ──► positive openness + negative openness
+                 │
+                 ▼
+ Differential openness = (positive - negative) / 2
+                 │
+                 ▼
+ Optional display-ready normalized rasters
+                 │
+                 ▼
+ Red slope × grayscale openness ──► RGB GeoTIFF
+```
 
-For more details, see the [LICENSE](LICENSE) file.
+## Processing tools
 
----
+### RRIM Generator
 
-## 🌍 Overview
+Produces the geomorphometric inputs used by the composition:
 
-RRIM is a visualization method that enhances subtle topographic features by combining:
+| Output | Meaning |
+| --- | --- |
+| Slope | QGIS native slope in degrees |
+| Differential openness | Half the difference between positive and negative openness |
+| Normalized slope | Optional 0–90° display copy with red ramp and Multiply blending |
+| Normalized differential openness | Optional display copy clamped to -50–50 |
 
-- Slope (in red tones) (blending=multiply)
-- Differential openness (in grayscale)
+The internal horizon implementation currently uses a radius of **10 cells** and
+**16 directions**. These values are fixed in source version 2.2.0 and therefore
+represent different physical distances when DEM pixel size changes.
 
-This combination allows for improved interpretation of:
-- Lineaments and structural controls
-- Micro-topography
-- Erosional and depositional features
-- Subtle geomorphological patterns
+### RRIM RGB Composer
 
----
+Combines existing slope and differential-openness rasters into one packed RGB
+GeoTIFF. The operator controls:
 
-## ⚙️ Dependency
+- maximum displayed slope;
+- minimum differential openness;
+- maximum differential openness; and
+- output GeoTIFF path.
 
-This plugin no longer depends on the Relief Visualization Toolbox (RVT) plugin.
+Both inputs must have the same raster dimensions, extent and CRS.
 
-Differential openness is computed internally by QGIS-RRIM using a horizon-based positive and negative openness routine.
+## Requirements
 
----
+- QGIS 3.28 or newer;
+- a valid single-band DEM;
+- projected CRS;
+- horizontal and elevation units that are mutually consistent; and
+- enough memory and temporary disk space for the DEM and openness halo blocks.
 
-## 🧰 Tools
+The plugin computes openness internally and does not require the Relief
+Visualization Toolbox plugin.
 
-### 1. RRIM Generator (v2.1)
+## Installation
 
-Generates the required layers from a DEM:
+### From a release ZIP
 
-- Slope layer
-- Differential openness layer (internal algorithm)
+1. download the ZIP from the [latest release](https://github.com/jordan-zav/QGIS-RRIM/releases/latest);
+2. open **Plugins → Manage and Install Plugins** in QGIS;
+3. choose **Install from ZIP**; and
+4. select the downloaded archive and enable QGIS-RRIM.
 
-Features:
-- Automatic preprocessing workflow
-- Optional normalization of outputs
-- Optional direct RRIM RGB generation
+### Development checkout
 
----
+Copy or link the repository as `QGIS_RRIM` inside the active QGIS profile's
+`python/plugins` directory, then restart QGIS and enable the plugin.
 
-### 2. RRIM RGB Composer
+## Use in QGIS
 
-Creates a final georeferenced RRIM RGB GeoTIFF from precomputed inputs.
+1. load a projected DEM and confirm its pixel/elevation units;
+2. open **Processing Toolbox → QGIS-RRIM → RRIM Generator**;
+3. save slope and differential openness outputs;
+4. optionally request normalized display copies;
+5. run **RRIM RGB Composer** with reviewed display limits; and
+6. inspect the RGB output at several scales and alongside the original DEM.
 
-Features:
-- Combines slope and openness layers
-- User-defined normalization ranges
-- Full control over visualization parameters
-- Export-ready output for GIS workflows
+Because both tools are QGIS Processing algorithms, they can also be used in
+batch processing and Model Designer workflows.
 
----
+## Interpretation and quality control
 
-## 🧪 Workflow Summary
+- The 10-cell radius must be converted to a physical distance using pixel size.
+- NoData boundaries and raster edges reduce the available horizon neighborhood.
+- Resampling a DEM does not create new topographic detail.
+- Slope and openness depend on DEM noise, smoothing and vertical/horizontal units.
+- RRIM contrast is a visualization choice, not a quantitative terrain class.
+- Compare features against contours, hillshade, imagery and field/geological data.
 
-1. Input DEM
-2. Generate slope + differential openness
-3. Normalize layers (optional)
-4. Compose RRIM RGB
-5. Export GeoTIFF
+## Method reference
 
----
+The implementation follows the RRIM concept described by:
 
-## 📚 Citation
+> Chiba, T., Kaneta, S. and Suzuki, Y. (2008). *Red Relief Image Map: New
+> Visualization Method for Three Dimensional Data*. The International Archives
+> of the Photogrammetry, Remote Sensing and Spatial Information Sciences,
+> XXXVII-B2, 1071–1076.
 
-Original method:
+[Read the original ISPRS paper](https://www.isprs.org/proceedings/XXXVII/congress/2_pdf/11_ThS-6/08.pdf).
 
-Chiba, T., Kaneta, S., & Suzuki, Y. (2009). Red relief image map: New visualization method for three dimensional data.
-ISPRS Journal of Photogrammetry and Remote Sensing, 62(2), 107–116.
+## Development and verification
 
----
+The numerical openness tests are independent of QGIS and can be executed with:
 
-Software implementation:
+```powershell
+python -m pytest -q
+```
 
-Zavaleta, J. (2026). QGIS-RRIM: Generate RRIM terrain layers and compose RRIM RGB outputs in QGIS.
-QGIS Plugin Repository. GNU GPLv3 License.
+They check flat terrain, uniform planes and agreement with a reference horizon
+calculation. A release should additionally be loaded in a supported QGIS version
+and exercised with a projected test DEM.
 
----
+## Repository map
 
-## 🚀 Notes
+| Path | Contents |
+| --- | --- |
+| `qgis_rrim.py` | Plugin lifecycle and provider registration |
+| `rrim_provider.py` | QGIS Processing provider |
+| `rrim_algorithm.py` | RRIM Generator workflow |
+| `rrim_openness.py` | Block-based positive/negative openness engine |
+| `rrim_rgb_composer.py` | RGB composition and GeoTIFF export |
+| `tests` | Numerical openness regression tests |
+| `metadata.txt` | QGIS Plugin Repository metadata |
 
-- Designed for geomorphology, structural geology, and remote sensing applications
-- Optimized for integration into QGIS-based workflows
-- Suitable for both regional and high-resolution terrain analysis
-## License
+## Project status
 
-This project is licensed under the GNU GPLv3 and the Dual Licensing agreement described above. See the [LICENSE](LICENSE) file for more details.
+The source tree is version 2.2.0 while the latest GitHub release is 2.1.0. The
+internal openness implementation removes the former runtime dependency on RVT.
+Configurable radius/direction parameters and automated QGIS lifecycle tests are
+the main remaining release-hardening tasks.
+
+## License and contact
+
+QGIS-RRIM is distributed under the [GNU General Public License v3.0](LICENSE).
+
+Jordan Zavaleta — GisGeo Dev<br>
+[jordanzav@gisgeo.dev](mailto:jordanzav@gisgeo.dev) · [gisgeo.dev](https://gisgeo.dev)
