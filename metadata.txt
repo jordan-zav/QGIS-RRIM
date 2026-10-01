@@ -1,6 +1,7 @@
 [general]
 name=QGIS-RRIM
 qgisMinimumVersion=3.28
+qgisMaximumVersion=3.99
 description=Generate RRIM terrain layers and compose RRIM RGB outputs in QGIS
 about=Implements the Red Relief Image Map (RRIM) method proposed by Chiba, Kaneta & Suzuki (2008) for high-detail terrain visualization and geomorphological interpretation. The plugin provides a RRIM Generator for slope and differential openness layers, plus a separate RRIM RGB Composer for RGB composition workflows, optimized for high-resolution DEMs, particularly LiDAR-derived datasets. Differential openness is computed internally, so the RRIM Generator does not require the RVT plugin.
 version=2.2.0
@@ -16,3 +17,5 @@ icon=icon.png
 category=Raster
 tags=RRIM,geomorphometry,terrain_analysis,DEM,LiDAR,geomorphology
 license=GPL-3.0-or-later
+
+changelog=Version 2.2.0 computes openness internally without RVT, fixes missing horizon samples and affine distances, preserves rectangular pixel grids, and exports RGB per pixel with an internal NoData mask.

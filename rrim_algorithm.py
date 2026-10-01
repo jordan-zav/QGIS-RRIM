@@ -46,6 +46,7 @@ from PyQt5.QtGui import QColor, QPainter
 from qgis import processing
 
 from .rrim_openness import compute_openness_raster
+from .rrim_raster import raster_math, require_north_up
 
 
 def _build_renderer(layer, items, minimum=None, maximum=None):
@@ -196,38 +197,8 @@ class RRIMGenerator(QgsProcessingAlgorithm):
         )
 
     def _clamp_output(self, source_path, layer_name, expression, output_path, context, feedback):
-        layer = QgsRasterLayer(source_path, layer_name)
-        if not layer.isValid():
-            raise QgsProcessingException(f"Failed to load {layer_name} for normalization.")
-
-        try:
-            extent = layer.extent()
-            extent_str = (
-                f"{extent.xMinimum()},{extent.xMaximum()},"
-                f"{extent.yMinimum()},{extent.yMaximum()}"
-            )
-            cell_size = min(
-                abs(layer.rasterUnitsPerPixelX()),
-                abs(layer.rasterUnitsPerPixelY())
-            )
-            result = processing.run(
-                "native:rastercalc",
-                {
-                    "LAYERS": [layer],
-                    "EXPRESSION": expression,
-                    "EXTENT": extent_str,
-                    "CELL_SIZE": cell_size,
-                    "CRS": layer.crs().authid() or source_path,
-                    "OUTPUT": output_path
-                },
-                context=context,
-                feedback=feedback,
-                is_child_algorithm=True
-            )["OUTPUT"]
-        finally:
-            del layer
-
-        return result
+        limits = (0.0, 90.0) if layer_name == "Slope" else (-50.0, 50.0)
+        return raster_math(source_path, output_path, limits=limits, feedback=feedback)
 
     def _normalized_output_path(self, parameters, output_name, context, filename):
         return (
@@ -284,6 +255,11 @@ class RRIMGenerator(QgsProcessingAlgorithm):
                 is_child_algorithm=True,
             )["OUTPUT"]
 
+        try:
+            require_north_up(raster_path)
+        except ValueError as error:
+            raise QgsProcessingException(str(error)) from error
+
         slope_norm_path = None
         diff_norm_path = None
         if auto_normalize:
@@ -330,39 +306,12 @@ class RRIMGenerator(QgsProcessingAlgorithm):
             raise QgsProcessingException(str(error)) from error
 
         feedback.setCurrentStep(2)
-        op_layer = QgsRasterLayer(op_path, "OP")
-        on_layer = QgsRasterLayer(on_path, "ON")
-
-        if not op_layer.isValid() or not on_layer.isValid():
-            raise QgsProcessingException("Failed to load intermediate openness layers.")
-
-        try:
-            extent = raster_layer.extent()
-            extent_str = (
-                f"{extent.xMinimum()},{extent.xMaximum()},"
-                f"{extent.yMinimum()},{extent.yMaximum()}"
-            )
-            cell_size = min(
-                abs(raster_layer.rasterUnitsPerPixelX()),
-                abs(raster_layer.rasterUnitsPerPixelY())
-            )
-            diff = processing.run(
-                "native:rastercalc",
-                {
-                    "LAYERS": [op_layer, on_layer],
-                    "EXPRESSION": '("OP@1" - "ON@1") / 2',
-                    "EXTENT": extent_str,
-                    "CELL_SIZE": cell_size,
-                    "CRS": raster_layer.crs().authid() or parameters[self.INPUT_RASTER],
-                    "OUTPUT": parameters[self.OUT_DIFF]
-                },
-                context=context,
-                feedback=feedback,
-                is_child_algorithm=True
-            )["OUTPUT"]
-        finally:
-            del op_layer
-            del on_layer
+        diff = raster_math(
+            op_path,
+            self.parameterAsOutputLayer(parameters, self.OUT_DIFF, context),
+            second_path=on_path,
+            feedback=feedback,
+        )
 
         if auto_normalize:
             diff_norm = self._clamp_output(

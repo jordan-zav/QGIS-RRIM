@@ -8,7 +8,7 @@ import os
 import numpy as np
 
 
-def _direction_offsets(radius, num_directions, pixel_width, pixel_height):
+def _direction_offsets(radius, num_directions, pixel_width, pixel_height, geotransform=None):
     if radius < 1:
         raise ValueError("radius must be at least 1 pixel")
     if num_directions < 1:
@@ -28,7 +28,11 @@ def _direction_offsets(radius, num_directions, pixel_width, pixel_height):
             if dx == 0 and dy == 0:
                 continue
 
-            distance = math.hypot(dx * pixel_width, dy * pixel_height)
+            distance = (math.hypot(
+                dx * geotransform[1] + dy * geotransform[2],
+                dx * geotransform[4] + dy * geotransform[5],
+            ) if geotransform is not None else
+                math.hypot(dx * pixel_width, dy * pixel_height))
             if distance == 0:
                 continue
 
@@ -61,23 +65,27 @@ def _shift_array(array, dy, dx):
     return shifted
 
 
-def _calculate_openness(dem_array, radius, num_directions, pixel_width, pixel_height):
-    directions = list(_direction_offsets(radius, num_directions, pixel_width, pixel_height))
+def _calculate_openness(dem_array, radius, num_directions, pixel_width, pixel_height, geotransform=None):
+    dem_array = np.where(np.isfinite(dem_array), dem_array, np.nan)
+    directions = list(_direction_offsets(radius, num_directions, pixel_width, pixel_height, geotransform))
     openness_sum = np.zeros(dem_array.shape, dtype=np.float32)
-    minimum_horizon = np.float32(np.degrees(np.arctan(-1000.0)))
+    valid_directions = np.zeros(dem_array.shape, dtype=np.int32)
     center_is_valid = ~np.isnan(dem_array)
 
     for offsets in directions:
-        max_horizon = np.full(dem_array.shape, minimum_horizon, dtype=np.float32)
+        max_horizon = np.full(dem_array.shape, np.nan, dtype=np.float32)
 
         for dy, dx, distance in offsets:
             shifted = _shift_array(dem_array, dy, dx)
             horizon_angle = np.degrees(np.arctan((shifted - dem_array) / distance))
             max_horizon = np.fmax(max_horizon, horizon_angle)
 
-        openness_sum += 90.0 - max_horizon
+        valid = np.isfinite(max_horizon)
+        openness_sum[valid] += 90.0 - max_horizon[valid]
+        valid_directions += valid
 
-    openness = (openness_sum / len(directions)).astype(np.float32)
+    openness = np.full(dem_array.shape, np.nan, dtype=np.float32)
+    np.divide(openness_sum, valid_directions, out=openness, where=valid_directions > 0)
     openness[~center_is_valid] = np.nan
     return openness
 
@@ -94,8 +102,8 @@ def compute_openness_raster(input_path, output_path, radius=10, num_directions=1
 
     geotransform = dataset.GetGeoTransform()
     if geotransform:
-        pixel_width = math.hypot(geotransform[1], geotransform[2])
-        pixel_height = math.hypot(geotransform[4], geotransform[5])
+        pixel_width = math.hypot(geotransform[1], geotransform[4])
+        pixel_height = math.hypot(geotransform[2], geotransform[5])
     else:
         pixel_width = 1.0
         pixel_height = 1.0
@@ -146,6 +154,8 @@ def compute_openness_raster(input_path, output_path, radius=10, num_directions=1
             array = band.ReadAsArray(read_xoff, read_yoff, read_cols, read_rows).astype(np.float32)
             if nodata_value is not None:
                 array[array == nodata_value] = np.nan
+            valid_mask = band.GetMaskBand().ReadAsArray(read_xoff, read_yoff, read_cols, read_rows)
+            array[(valid_mask == 0) | ~np.isfinite(array)] = np.nan
 
             pad_top = max(0, radius - yoff)
             pad_left = max(0, radius - xoff)
@@ -167,6 +177,7 @@ def compute_openness_raster(input_path, output_path, radius=10, num_directions=1
                 num_directions=num_directions,
                 pixel_width=pixel_width,
                 pixel_height=pixel_height,
+                geotransform=geotransform,
             )
 
             crop_y = yoff - read_yoff + pad_top

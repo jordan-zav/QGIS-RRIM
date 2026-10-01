@@ -16,202 +16,107 @@
 import os
 import uuid
 
+import numpy as np
 from qgis.core import (
-    QgsProcessingAlgorithm,
-    QgsProcessingException,
-    QgsProcessingParameterRasterLayer,
-    QgsProcessingParameterNumber,
+    QgsProcessingAlgorithm, QgsProcessingException,
+    QgsProcessingParameterRasterLayer, QgsProcessingParameterNumber,
     QgsProcessingParameterRasterDestination,
-    QgsProcessingUtils,
-    QgsProject,
-    QgsPrintLayout,
-    QgsLayoutItemMap,
-    QgsLayoutExporter,
-    QgsLayoutSize,
-    QgsUnitTypes,
-    QgsRasterShader,
-    QgsColorRampShader,
-    QgsSingleBandPseudoColorRenderer,
-    QgsRasterLayer
 )
-
 from qgis.PyQt.QtGui import QIcon
-from qgis.PyQt.QtCore import QSize
-from PyQt5.QtGui import QColor, QPainter
-from osgeo import gdal, osr
+from osgeo import gdal
+
+from .rrim_raster import require_north_up
 
 
-def _build_renderer(layer, items, minimum=None, maximum=None):
-    shader = QgsColorRampShader()
-    shader.setColorRampType(QgsColorRampShader.Interpolated)
-    if minimum is not None:
-        shader.setMinimumValue(minimum)
-    if maximum is not None:
-        shader.setMaximumValue(maximum)
-    shader.setColorRampItemList(
-        [QgsColorRampShader.ColorRampItem(value, QColor(color), label) for value, color, label in items]
-    )
-
-    raster_shader = QgsRasterShader()
-    raster_shader.setRasterShaderFunction(shader)
-
-    return QgsSingleBandPseudoColorRenderer(layer.dataProvider(), 1, raster_shader)
-
-
-def _apply_rrim_style(slope_layer, do_layer, slope_max, do_min, do_max):
-    slope_items = [
-        (0.0, "#fff5f0", "0.0000"),
-        (slope_max * 0.13, "#fee0d2", f"{slope_max * 0.13:.4f}"),
-        (slope_max * 0.26, "#fcbba1", f"{slope_max * 0.26:.4f}"),
-        (slope_max * 0.39, "#fc9272", f"{slope_max * 0.39:.4f}"),
-        (slope_max * 0.52, "#fb6a4a", f"{slope_max * 0.52:.4f}"),
-        (slope_max * 0.65, "#ef3b2c", f"{slope_max * 0.65:.4f}"),
-        (slope_max * 0.78, "#cb181d", f"{slope_max * 0.78:.4f}"),
-        (slope_max * 0.90, "#a50f15", f"{slope_max * 0.90:.4f}"),
-        (slope_max, "#67000d", f"{slope_max:.4f}"),
-    ]
-    do_items = [
-        (do_min, "#000000", f"{do_min:g}"),
-        (do_max, "#ffffff", f"{do_max:g}"),
-    ]
-
-    do_layer.setRenderer(_build_renderer(do_layer, do_items, minimum=do_min, maximum=do_max))
-    do_layer.triggerRepaint()
-
-    slope_layer.setRenderer(_build_renderer(slope_layer, slope_items, minimum=0.0, maximum=slope_max))
-    slope_layer.setBlendMode(QPainter.CompositionMode_Multiply)
-    slope_layer.triggerRepaint()
+def _compose_rgb(slope, openness, slope_max, do_min, do_max):
+    """Interpolate the RRIM ramps and multiply colors without resampling."""
+    stops = np.array([0, .13, .26, .39, .52, .65, .78, .90, 1]) * slope_max
+    colors = np.array([
+        [255,245,240], [254,224,210], [252,187,161], [252,146,114],
+        [251,106,74], [239,59,44], [203,24,29], [165,15,21], [103,0,13],
+    ])
+    gray = np.clip((openness - do_min) / (do_max - do_min), 0, 1)
+    return np.stack([
+        np.rint(np.interp(slope, stops, colors[:, channel]) * gray).astype(np.uint8)
+        for channel in range(3)
+    ])
 
 
 def export_rrim_geotiff(slope_layer, do_layer, output_path, slope_max=90.0, do_min=-50.0, do_max=50.0):
-    if slope_layer is None or not slope_layer.isValid():
-        raise QgsProcessingException("Invalid slope layer for RRIM export.")
-
-    if do_layer is None or not do_layer.isValid():
-        raise QgsProcessingException("Invalid differential openness layer for RRIM export.")
-
-    if slope_max <= 0 or do_min >= do_max:
+    if any(layer is None or not layer.isValid() or layer.bandCount() != 1
+           for layer in (slope_layer, do_layer)):
+        raise QgsProcessingException("RRIM requires two valid single-band rasters.")
+    if not np.all(np.isfinite([slope_max, do_min, do_max])) or slope_max <= 0 or do_min >= do_max:
         raise QgsProcessingException("RRIM display ranges are invalid.")
-
-    temp_dir = QgsProcessingUtils.tempFolder()
-    uid = uuid.uuid4().hex
-
-    temp_render = os.path.join(temp_dir, f"rrim_rgb_{uid}.tif")
-
-    width = do_layer.width()
-    height = do_layer.height()
-    extent = do_layer.extent()
-
-    if width <= 0 or height <= 0:
-        raise QgsProcessingException("Invalid raster dimensions for RRIM RGB export.")
-
-    slope_extent = slope_layer.extent()
-    extent_tolerance = max(abs(extent.width()), abs(extent.height()), 1.0) * 1e-9
-    if slope_layer.width() != width or slope_layer.height() != height:
-        raise QgsProcessingException("Slope and differential openness rasters must have matching dimensions.")
-    if slope_layer.crs() != do_layer.crs():
-        raise QgsProcessingException("Slope and differential openness rasters must use the same CRS.")
-    if any(
-        abs(left - right) > extent_tolerance
-        for left, right in (
-            (slope_extent.xMinimum(), extent.xMinimum()),
-            (slope_extent.xMaximum(), extent.xMaximum()),
-            (slope_extent.yMinimum(), extent.yMinimum()),
-            (slope_extent.yMaximum(), extent.yMaximum()),
-        )
-    ):
-        raise QgsProcessingException("Slope and differential openness rasters must have matching extents.")
-
-    slope_renderer = slope_layer.renderer().clone() if slope_layer.renderer() else None
-    do_renderer = do_layer.renderer().clone() if do_layer.renderer() else None
-    slope_blend_mode = slope_layer.blendMode()
-
+    if not do_layer.crs().isValid() or slope_layer.crs() != do_layer.crs():
+        raise QgsProcessingException("Inputs must have the same valid CRS.")
     try:
-        _apply_rrim_style(slope_layer, do_layer, slope_max, do_min, do_max)
+        require_north_up(slope_layer.source())
+        require_north_up(do_layer.source())
+    except ValueError as error:
+        raise QgsProcessingException(str(error)) from error
 
-        layout = QgsPrintLayout(QgsProject.instance())
-        layout.initializeDefaults()
-        layout.setName("RRIM_RGB_Composer")
+    sources = [gdal.Open(layer.source()) for layer in (slope_layer, do_layer)]
+    reference = sources[1]
+    width, height = reference.RasterXSize, reference.RasterYSize
+    transform = reference.GetGeoTransform()
+    if any((ds.RasterXSize, ds.RasterYSize) != (width, height)
+           or ds.GetGeoTransform() != transform for ds in sources):
+        raise QgsProcessingException("Inputs must have identical pixel grids.")
+    if any(os.path.normcase(os.path.abspath(output_path)) ==
+           os.path.normcase(os.path.abspath(layer.source())) for layer in (slope_layer, do_layer)):
+        raise QgsProcessingException("RGB output must differ from its input files.")
 
-        page = layout.pageCollection().page(0)
-        page.attemptResize(QgsLayoutSize(width, height, QgsUnitTypes.LayoutPixels))
-
-        map_item = QgsLayoutItemMap(layout)
-        map_item.attemptResize(QgsLayoutSize(width, height, QgsUnitTypes.LayoutPixels))
-        map_item.setPos(0, 0)
-        map_item.setExtent(extent)
-        map_item.setLayers([slope_layer, do_layer])
-        map_item.setFrameEnabled(False)
-        map_item.setBackgroundColor(QColor("white"))
-        layout.addLayoutItem(map_item)
-
-        exporter = QgsLayoutExporter(layout)
-        image_settings = QgsLayoutExporter.ImageExportSettings()
-        image_settings.cropToContents = False
-        image_settings.imageSize = QSize(width, height)
-        result = exporter.exportToImage(temp_render, image_settings)
-        if result != QgsLayoutExporter.Success:
-            raise QgsProcessingException("Failed to render RRIM RGB image.")
-
-        ds_src = gdal.Open(temp_render)
-        if ds_src is None:
-            raise QgsProcessingException("Failed to open temporary RRIM RGB image.")
-        if ds_src.RasterXSize != width or ds_src.RasterYSize != height:
-            actual_size = (ds_src.RasterXSize, ds_src.RasterYSize)
-            ds_src = None
-            raise QgsProcessingException(
-                f"RRIM render size mismatch: expected {width}x{height}, "
-                f"got {actual_size[0]}x{actual_size[1]}."
-            )
-
-        ds_dst = gdal.Translate(
-            output_path,
-            ds_src,
-            format="GTiff",
-            bandList=[1, 2, 3],
-            creationOptions=["COMPRESS=LZW", "TILED=YES"],
+    # Write a complete self-contained GeoTIFF before replacing the destination.
+    temporary = output_path + "." + uuid.uuid4().hex + ".tmp.tif"
+    output = None
+    mask_band = None
+    try:
+        output = gdal.GetDriverByName("GTiff").Create(
+            temporary, width, height, 3, gdal.GDT_Byte,
+            options=["COMPRESS=LZW", "TILED=YES", "PHOTOMETRIC=RGB"],
         )
-        if ds_dst is None:
-            ds_src = None
-            raise QgsProcessingException("Failed to create RRIM RGB GeoTIFF.")
-
-        px_w = extent.width() / width
-        px_h = extent.height() / height
-
-        ds_dst.SetGeoTransform([
-            extent.xMinimum(), px_w, 0,
-            extent.yMaximum(), 0, -px_h
-        ])
-
-        projection_wkt = None
-        source_ds = gdal.Open(do_layer.source())
-        if source_ds is not None:
-            projection_wkt = source_ds.GetProjection()
-            source_ds = None
-
-        if not projection_wkt:
-            projection_wkt = do_layer.crs().toWkt()
-
-        if projection_wkt:
-            ds_dst.SetProjection(projection_wkt)
-
-        ds_src = None
-        ds_dst = None
-    finally:
-        if slope_renderer is not None:
-            slope_layer.setRenderer(slope_renderer)
-        if do_renderer is not None:
-            do_layer.setRenderer(do_renderer)
-        slope_layer.setBlendMode(slope_blend_mode)
-        slope_layer.triggerRepaint()
-        do_layer.triggerRepaint()
-
+        if output is None:
+            raise QgsProcessingException("Could not create RGB GeoTIFF.")
+        output.SetGeoTransform(transform)
+        output.SetProjection(do_layer.crs().toWkt())
+        previous = gdal.GetThreadLocalConfigOption("GDAL_TIFF_INTERNAL_MASK")
         try:
-            if os.path.exists(temp_render):
-                os.remove(temp_render)
-        except Exception:
-            pass
-
+            gdal.SetThreadLocalConfigOption("GDAL_TIFF_INTERNAL_MASK", "YES")
+            if output.CreateMaskBand(gdal.GMF_PER_DATASET) != 0:
+                raise QgsProcessingException("Could not create RGB validity mask.")
+        finally:
+            gdal.SetThreadLocalConfigOption("GDAL_TIFF_INTERNAL_MASK", previous)
+        mask_band = output.GetRasterBand(1).GetMaskBand()
+        for y in range(0, height, 512):
+            for x in range(0, width, 512):
+                cols, rows = min(512, width-x), min(512, height-y)
+                valid = np.ones((rows, cols), dtype=bool)
+                arrays = []
+                for source in sources:
+                    band = source.GetRasterBand(1)
+                    values = band.ReadAsArray(x, y, cols, rows).astype(np.float64)
+                    valid &= np.isfinite(values)
+                    valid &= band.GetMaskBand().ReadAsArray(x, y, cols, rows) != 0
+                    nodata = band.GetNoDataValue()
+                    if nodata is not None:
+                        valid &= values != nodata
+                    arrays.append(values)
+                rgb = _compose_rgb(*(np.where(valid, values, 0) for values in arrays),
+                                   slope_max, do_min, do_max)
+                rgb[:, ~valid] = 0
+                for channel in range(3):
+                    output.GetRasterBand(channel+1).WriteArray(rgb[channel], x, y)
+                mask_band.WriteArray(valid.astype(np.uint8) * 255, x, y)
+        output.FlushCache()
+        mask_band = None
+        output = None
+        os.replace(temporary, output_path)
+    finally:
+        mask_band = None
+        output = None
+        if os.path.exists(temporary):
+            os.remove(temporary)
     return output_path
 
 

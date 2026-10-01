@@ -71,3 +71,29 @@ def test_fractional_radial_sampling_includes_diagonal_transition_cells():
     first_oblique_direction = {(dy, dx) for dy, dx, _ in directions[1]}
 
     assert (1, 1) in first_oblique_direction
+
+
+def test_missing_directions_do_not_create_false_horizons():
+    dem = np.zeros((45, 45), dtype=np.float32)
+    dem[:, :22] = np.nan
+    actual = _calculate_openness(dem, 10, 16, 1, 1)
+    np.testing.assert_allclose(actual[22, 22], 90)
+    dem[:] = np.nan
+    dem[22, 22] = 1
+    assert np.isnan(_calculate_openness(dem, 10, 16, 1, 1)[22, 22])
+
+
+def test_rotated_rectangular_grid_preserves_horizon_angles():
+    rng = np.random.default_rng(7)
+    dem = rng.normal(size=(32, 32)).astype(np.float32)
+    c = np.sqrt(0.5)
+    transform = (0, 30*c, 10*c, 0, 30*c, -10*c)
+    expected = _calculate_openness(dem, 10, 16, 30, 10)
+    actual = _calculate_openness(dem, 10, 16, 30, 10, transform)
+    np.testing.assert_allclose(actual, expected, atol=2e-5)
+
+
+def test_sheared_grid_uses_full_affine_distance():
+    offsets = list(_direction_offsets(1, 8, 30, 10, (0, 30, 4, 0, 0, -10)))
+    diagonal = next(distance for dy, dx, distance in offsets[1] if (dy, dx) == (1, 1))
+    np.testing.assert_allclose(diagonal, np.hypot(34, 10))

@@ -66,6 +66,11 @@ GeoTIFF. The operator controls:
 - output GeoTIFF path.
 
 Both inputs must have the same raster dimensions, extent and CRS.
+RGB colors are computed per pixel without resampling. An internal GeoTIFF
+mask preserves invalid pixels from either input; valid black remains valid.
+Rectangular pixels retain their original grid in all outputs. The generator
+and RGB composer require north-up grids; warp rotated or sheared inputs first.
+The openness kernel itself measures distances using the full affine transform.
 
 ## Requirements
 
@@ -108,6 +113,8 @@ batch processing and Model Designer workflows.
 
 - The 10-cell radius must be converted to a physical distance using pixel size.
 - NoData boundaries and raster edges reduce the available horizon neighborhood.
+- Openness averages only directions with valid samples; cells without any
+  valid horizon samples remain NoData. Outer edges use reflected padding.
 - Resampling a DEM does not create new topographic detail.
 - Slope and openness depend on DEM noise, smoothing and vertical/horizontal units.
 - RRIM contrast is a visualization choice, not a quantitative terrain class.
