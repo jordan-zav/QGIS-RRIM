@@ -1,3 +1,5 @@
+<p align="center"><strong>English</strong> · <a href="README.es.md">Español</a></p>
+
 <div align="center">
   <img src="icon.png" alt="QGIS-RRIM" width="112">
 
@@ -22,7 +24,7 @@ display ranges and export a georeferenced RRIM RGB GeoTIFF.
 
 ## Workflow at a glance
 
-```text
+~~~text
 Single-band DEM in a projected CRS
                  │
                  ▼
@@ -36,7 +38,7 @@ Single-band DEM in a projected CRS
                  │
                  ▼
  Red slope × grayscale openness ──► RGB GeoTIFF
-```
+~~~
 
 ## Processing tools
 
@@ -94,8 +96,8 @@ Visualization Toolbox plugin.
 
 ### Development checkout
 
-Copy or link the repository as `QGIS_RRIM` inside the active QGIS profile's
-`python/plugins` directory, then restart QGIS and enable the plugin.
+Copy or link the repository as <code>QGIS_RRIM</code> inside the active QGIS profile's
+<code>python/plugins</code> directory, then restart QGIS and enable the plugin.
 
 ## Use in QGIS
 
@@ -135,9 +137,9 @@ The implementation follows the RRIM concept described by:
 
 The numerical openness tests are independent of QGIS and can be executed with:
 
-```powershell
+~~~powershell
 python -m pytest -q
-```
+~~~
 
 They check flat terrain, uniform planes and agreement with a reference horizon
 calculation. A release should additionally be loaded in a supported QGIS version
@@ -147,13 +149,13 @@ and exercised with a projected test DEM.
 
 | Path | Contents |
 | --- | --- |
-| `qgis_rrim.py` | Plugin lifecycle and provider registration |
-| `rrim_provider.py` | QGIS Processing provider |
-| `rrim_algorithm.py` | RRIM Generator workflow |
-| `rrim_openness.py` | Block-based positive/negative openness engine |
-| `rrim_rgb_composer.py` | RGB composition and GeoTIFF export |
-| `tests` | Numerical openness regression tests |
-| `metadata.txt` | QGIS Plugin Repository metadata |
+| <code>qgis_rrim.py</code> | Plugin lifecycle and provider registration |
+| <code>rrim_provider.py</code> | QGIS Processing provider |
+| <code>rrim_algorithm.py</code> | RRIM Generator workflow |
+| <code>rrim_openness.py</code> | Block-based positive/negative openness engine |
+| <code>rrim_rgb_composer.py</code> | RGB composition and GeoTIFF export |
+| <code>tests</code> | Numerical openness regression tests |
+| <code>metadata.txt</code> | QGIS Plugin Repository metadata |
 
 ## Project status
 
