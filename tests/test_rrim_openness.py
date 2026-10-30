@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from rrim_openness import _calculate_openness, _direction_offsets
 
@@ -97,3 +98,18 @@ def test_sheared_grid_uses_full_affine_distance():
     offsets = list(_direction_offsets(1, 8, 30, 10, (0, 30, 4, 0, 0, -10)))
     diagonal = next(distance for dy, dx, distance in offsets[1] if (dy, dx) == (1, 1))
     np.testing.assert_allclose(diagonal, np.hypot(34, 10))
+
+
+@pytest.mark.parametrize("radius,directions,width,height", [
+    (0, 16, 1, 1), (-1, 16, 1, 1), (1.5, 16, 1, 1),
+    (10, 0, 1, 1), (10, 2.5, 1, 1), (10, 16, 0, 1),
+    (10, 16, np.nan, 1), (10, 16, 1, np.inf),
+])
+def test_invalid_sampling_is_rejected(radius, directions, width, height):
+    with pytest.raises(ValueError):
+        list(_direction_offsets(radius, directions, width, height))
+
+
+def test_singular_transform_is_rejected():
+    with pytest.raises(ValueError, match="invertible"):
+        list(_direction_offsets(2, 8, 1, 1, (0, 1, 1, 0, 1, 1)))

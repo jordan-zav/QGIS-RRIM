@@ -9,12 +9,19 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import numpy as np
 from osgeo import gdal, osr
 from qgis.core import (QgsApplication, QgsProject, QgsCoordinateReferenceSystem,
-                       QgsRasterLayer, QgsProcessingContext, QgsProcessingFeedback)
+                       QgsRasterLayer, QgsProcessingContext, QgsProcessingFeedback, QgsSettings)
+from qgis.PyQt.QtCore import QSettings
 
 root = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(root.parent))
-app = QgsApplication([], False)
+profile_root = Path(tempfile.mkdtemp(prefix="rrim_integration_profile_"))
+os.environ["QGIS_AUTH_DB_DIR_PATH"] = str(profile_root / "auth")
+(profile_root / "auth").mkdir()
+app = QgsApplication([], False, str(profile_root / "profile"))
 app.initQgis()
+QSettings.setDefaultFormat(QSettings.Format.IniFormat)
+QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(profile_root / "settings"))
+assert profile_root.resolve() in Path(QgsSettings().fileName()).resolve().parents
 sys.path.insert(0, str(Path(QgsApplication.prefixPath()) / "python/plugins"))
 from processing.core.Processing import Processing
 Processing.initialize()

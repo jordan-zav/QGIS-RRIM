@@ -28,12 +28,17 @@ class QGISRRIM:
 
     def initProcessing(self):
         if self.provider is None:
-            self.provider = RRIMProvider()
-            QgsApplication.processingRegistry().addProvider(self.provider)
+            provider = RRIMProvider()
+            if not QgsApplication.processingRegistry().addProvider(provider):
+                raise RuntimeError("Could not register the QGIS-RRIM Processing provider.")
+            self.provider = provider
 
     def initGui(self):
         self.initProcessing()
 
     def unload(self):
-        if self.provider:
-            QgsApplication.processingRegistry().removeProvider(self.provider)
+        if self.provider is not None:
+            registry = QgsApplication.processingRegistry()
+            if registry.providerById("qgis_rrim") is self.provider:
+                registry.removeProvider(self.provider)
+            self.provider = None

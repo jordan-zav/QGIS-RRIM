@@ -23,6 +23,7 @@ following Chiba, Kaneta & Suzuki (2008).
 
 import os
 import uuid
+from typing import ClassVar
 
 from qgis.core import (
     QgsProcessingAlgorithm,
@@ -34,19 +35,18 @@ from qgis.core import (
     QgsProcessingMultiStepFeedback,
     QgsProcessingException,
     QgsProcessingUtils,
-    QgsRasterLayer,
-    QgsProject,
+    QgsProviderRegistry,
     QgsRasterShader,
     QgsColorRampShader,
     QgsSingleBandPseudoColorRenderer,
 )
 
-from qgis.PyQt.QtGui import QIcon
-from PyQt5.QtGui import QColor, QPainter
+from qgis.PyQt.QtGui import QIcon, QColor, QPainter
+from qgis.PyQt import sip
 from qgis import processing
 
 from .rrim_openness import compute_openness_raster
-from .rrim_raster import raster_math, require_north_up
+from .rrim_raster import raster_math, require_north_up, validate_output_paths, check_canceled, atomic_raster_output
 
 
 def _build_renderer(layer, items, minimum=None, maximum=None):
@@ -67,6 +67,18 @@ def _build_renderer(layer, items, minimum=None, maximum=None):
 
 
 class _LayerNamePostProcessor(QgsProcessingLayerPostProcessorInterface):
+    # Processing can transfer LayerDetails between contexts after the algorithm
+    # has returned. Keep the Python overrides alive for the C++ object's lifetime.
+    _instances: ClassVar[dict] = {}
+
+    @classmethod
+    def create(cls, layer_name, style_mode=None):
+        for key, processor in tuple(cls._instances.items()):
+            if sip.isdeleted(processor):
+                cls._instances.pop(key, None)
+        processor = cls(layer_name, style_mode)
+        cls._instances[id(processor)] = processor
+        return processor
 
     def __init__(self, layer_name, style_mode=None):
         super().__init__()
@@ -127,6 +139,9 @@ class RRIMGenerator(QgsProcessingAlgorithm):
             "Red Relief Image Map (RRIM):<br><br>"
             "&bull; Slope (native QGIS)<br>"
             "&bull; Differential Openness = (Positive &minus; Negative) / 2 (internal algorithm)<br><br>"
+            "Requires a single-band, north-up DEM in a projected CRS with consistent "
+            "horizontal and elevation units (slope Z factor = 1). "
+            "Openness uses a fixed radius of 10 cells and 16 directions; no RVT plugin is required.<br><br>"
             "Optional normalization additionally creates display-ready copies:<br>"
             "&bull; Normalized Slope: Reds, 0 to 90<br>"
             "&bull; Normalized Differential Openness: Grays, -50 to 50<br><br>"
@@ -138,6 +153,10 @@ class RRIMGenerator(QgsProcessingAlgorithm):
             "For the Normalized Differential Openness output, the style is "
             "fixed to grayscale from <b>-50 to 50</b>.<br><br>"
             "RRIM RGB generation is handled separately by the RRIM RGB Composer.<br><br>"
+            "All output paths must differ from the DEM, its VRT dependencies and each other. "
+            "Choose a new filename when a destination has external masks, overviews or PAM sidecars. "
+            "Cancellation preserves the destination being written; outputs already completed "
+            "by earlier stages remain.<br><br>"
             "Workflow follows <a href='https://www.researchgate.net/publication/237517308_Red_relief_image_map_New_visualization_method_for_three_dimensional_data'>Chiba et al. (2008)</a>.<br><br>"
             "-----------------------------------------------------------<br>"
             "&copy; 2025 <a href='https://linkedin.com/in/jordan-zav'><b>Zavaleta, J.</b></a><br>"
@@ -196,10 +215,6 @@ class RRIMGenerator(QgsProcessingAlgorithm):
             )
         )
 
-    def _clamp_output(self, source_path, layer_name, expression, output_path, context, feedback):
-        limits = (0.0, 90.0) if layer_name == "Slope" else (-50.0, 50.0)
-        return raster_math(source_path, output_path, limits=limits, feedback=feedback)
-
     def _normalized_output_path(self, parameters, output_name, context, filename):
         return (
             self.parameterAsOutputLayer(parameters, output_name, context)
@@ -212,53 +227,34 @@ class RRIMGenerator(QgsProcessingAlgorithm):
 
         details = QgsProcessingContext.LayerDetails(
             label,
-            QgsProject.instance(),
+            context.project(),
             output_name
         )
-        details.setPostProcessor(_LayerNamePostProcessor(label, style_mode))
+        details.setPostProcessor(_LayerNamePostProcessor.create(label, style_mode))
         context.addLayerToLoadOnCompletion(path, details)
 
     def processAlgorithm(self, parameters, context, feedback):
         feedback = QgsProcessingMultiStepFeedback(4, feedback)
+        try:
+            check_canceled(feedback)
+        except InterruptedError as error:
+            raise QgsProcessingException(str(error)) from error
 
         raster_layer = self.parameterAsRasterLayer(parameters, self.INPUT_RASTER, context)
-        if raster_layer is None or raster_layer.bandCount() != 1:
+        if raster_layer is None or not raster_layer.isValid() or raster_layer.bandCount() != 1:
             raise QgsProcessingException("Input raster must be a valid single-band DEM.")
         if not raster_layer.crs().isValid() or raster_layer.crs().isGeographic():
             raise QgsProcessingException(
                 "Input DEM must use a valid projected CRS whose horizontal units match the elevation units."
             )
 
-        raster = parameters[self.INPUT_RASTER]
         raster_path = raster_layer.source()
         auto_normalize = self.parameterAsBool(parameters, self.AUTO_NORMALIZE, context)
+        slope_path = self.parameterAsOutputLayer(parameters, self.OUT_SLOPE, context)
+        diff_path = self.parameterAsOutputLayer(parameters, self.OUT_DIFF, context)
 
         slope_norm = None
         diff_norm = None
-
-        temp_dir = QgsProcessingUtils.tempFolder()
-        uid = uuid.uuid4().hex
-
-        op_path = os.path.join(temp_dir, f"rrim_op_{uid}.tif")
-        on_path = os.path.join(temp_dir, f"rrim_on_{uid}.tif")
-        materialized_input_path = None
-        if not os.path.isfile(raster_path):
-            materialized_input_path = os.path.join(temp_dir, f"rrim_input_{uid}.tif")
-            raster_path = processing.run(
-                "gdal:translate",
-                {
-                    "INPUT": raster_layer,
-                    "OUTPUT": materialized_input_path,
-                },
-                context=context,
-                feedback=feedback,
-                is_child_algorithm=True,
-            )["OUTPUT"]
-
-        try:
-            require_north_up(raster_path)
-        except ValueError as error:
-            raise QgsProcessingException(str(error)) from error
 
         slope_norm_path = None
         diff_norm_path = None
@@ -276,7 +272,36 @@ class RRIMGenerator(QgsProcessingAlgorithm):
                 "rrim_diff_norm.tif"
             )
 
+        input_paths = [raster_path]
+        from osgeo import gdal
+        decoded = QgsProviderRegistry.instance().decodeUri(raster_layer.providerType(), raster_path)
+        if decoded.get("path") and decoded["path"] not in input_paths:
+            input_paths.append(decoded["path"])
+        for candidate in tuple(input_paths):
+            if os.path.isfile(candidate):
+                original = gdal.Open(candidate)
+                if original is not None:
+                    input_paths.extend(original.GetFileList() or [])
+                original = None
         try:
+            validate_output_paths(input_paths, [slope_path, diff_path] +
+                                  ([slope_norm_path, diff_norm_path] if auto_normalize else []))
+        except ValueError as error:
+            raise QgsProcessingException(str(error)) from error
+
+        temp_dir = QgsProcessingUtils.tempFolder()
+        uid = uuid.uuid4().hex
+        op_path = os.path.join(temp_dir, f"rrim_op_{uid}.tif")
+        on_path = os.path.join(temp_dir, f"rrim_on_{uid}.tif")
+        materialized_input_path = None
+        try:
+            if not os.path.isfile(raster_path):
+                materialized_input_path = os.path.join(temp_dir, f"rrim_input_{uid}.tif")
+                raster_path = processing.run(
+                    "gdal:translate", {"INPUT": raster_layer, "OUTPUT": materialized_input_path},
+                    context=context, feedback=feedback, is_child_algorithm=True,
+                )["OUTPUT"]
+            require_north_up(raster_path)
             feedback.setCurrentStep(0)
             compute_openness_raster(
                 raster_path,
@@ -296,62 +321,29 @@ class RRIMGenerator(QgsProcessingAlgorithm):
                 invert=True,
                 feedback=feedback,
             )
-        except InterruptedError as error:
-            for temp_path in (op_path, on_path, materialized_input_path):
-                if temp_path and os.path.exists(temp_path):
-                    try:
-                        os.remove(temp_path)
-                    except OSError:
-                        pass
+            feedback.setCurrentStep(2)
+            diff = raster_math(op_path, diff_path, second_path=on_path, feedback=feedback)
+            if auto_normalize:
+                diff_norm = raster_math(diff, diff_norm_path, limits=(-50.0, 50.0), feedback=feedback)
+
+            feedback.setCurrentStep(3)
+            with atomic_raster_output(slope_path, input_paths, feedback) as temporary_slope:
+                processing.run(
+                    "native:slope", {"INPUT": raster_layer, "Z_FACTOR": 1, "OUTPUT": temporary_slope},
+                    context=context, feedback=feedback, is_child_algorithm=True,
+                )
+            slope = slope_path
+            if auto_normalize:
+                slope_norm = raster_math(slope, slope_norm_path, limits=(0.0, 90.0), feedback=feedback)
+        except (InterruptedError, ValueError, OSError, RuntimeError) as error:
             raise QgsProcessingException(str(error)) from error
-
-        feedback.setCurrentStep(2)
-        diff = raster_math(
-            op_path,
-            self.parameterAsOutputLayer(parameters, self.OUT_DIFF, context),
-            second_path=on_path,
-            feedback=feedback,
-        )
-
-        if auto_normalize:
-            diff_norm = self._clamp_output(
-                diff,
-                "Differential Openness",
-                'if("Differential Openness@1" > 50, 50, if("Differential Openness@1" < -50, -50, "Differential Openness@1"))',
-                diff_norm_path,
-                context,
-                feedback
-            )
-
-        feedback.setCurrentStep(3)
-        slope = processing.run(
-            "native:slope",
-            {
-                "INPUT": raster,
-                "Z_FACTOR": 1,
-                "OUTPUT": parameters[self.OUT_SLOPE]
-            },
-            context=context,
-            feedback=feedback,
-            is_child_algorithm=True
-        )["OUTPUT"]
-
-        if auto_normalize:
-            slope_norm = self._clamp_output(
-                slope,
-                "Slope",
-                'if("Slope@1" > 90, 90, if("Slope@1" < 0, 0, "Slope@1"))',
-                slope_norm_path,
-                context,
-                feedback
-            )
-
-        for temp_path in (op_path, on_path, materialized_input_path):
-            try:
-                if temp_path and os.path.exists(temp_path):
-                    os.remove(temp_path)
-            except PermissionError:
-                feedback.pushInfo(f"Could not remove temporary file in use: {temp_path}")
+        finally:
+            for temp_path in (op_path, on_path, materialized_input_path):
+                try:
+                    if temp_path and os.path.exists(temp_path):
+                        os.remove(temp_path)
+                except OSError:
+                    feedback.pushInfo(f"Could not remove temporary file in use: {temp_path}")
 
         self._register_output_layer(context, slope, self.OUT_SLOPE, "Slope")
         self._register_output_layer(context, diff, self.OUT_DIFF, "Differential Openness")

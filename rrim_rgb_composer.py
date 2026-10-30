@@ -14,7 +14,6 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import os
-import uuid
 
 import numpy as np
 from qgis.core import (
@@ -25,7 +24,7 @@ from qgis.core import (
 from qgis.PyQt.QtGui import QIcon
 from osgeo import gdal
 
-from .rrim_raster import require_north_up
+from .rrim_raster import require_north_up, atomic_raster_output, check_canceled, check_raster_write
 
 
 def _compose_rgb(slope, openness, slope_max, do_min, do_max):
@@ -42,7 +41,8 @@ def _compose_rgb(slope, openness, slope_max, do_min, do_max):
     ])
 
 
-def export_rrim_geotiff(slope_layer, do_layer, output_path, slope_max=90.0, do_min=-50.0, do_max=50.0):
+def export_rrim_geotiff(slope_layer, do_layer, output_path, slope_max=90.0, do_min=-50.0, do_max=50.0, feedback=None):
+    check_canceled(feedback)
     if any(layer is None or not layer.isValid() or layer.bandCount() != 1
            for layer in (slope_layer, do_layer)):
         raise QgsProcessingException("RRIM requires two valid single-band rasters.")
@@ -63,60 +63,57 @@ def export_rrim_geotiff(slope_layer, do_layer, output_path, slope_max=90.0, do_m
     if any((ds.RasterXSize, ds.RasterYSize) != (width, height)
            or ds.GetGeoTransform() != transform for ds in sources):
         raise QgsProcessingException("Inputs must have identical pixel grids.")
-    if any(os.path.normcase(os.path.abspath(output_path)) ==
-           os.path.normcase(os.path.abspath(layer.source())) for layer in (slope_layer, do_layer)):
-        raise QgsProcessingException("RGB output must differ from its input files.")
-
-    # Write a complete self-contained GeoTIFF before replacing the destination.
-    temporary = output_path + "." + uuid.uuid4().hex + ".tmp.tif"
-    output = None
-    mask_band = None
-    try:
-        output = gdal.GetDriverByName("GTiff").Create(
-            temporary, width, height, 3, gdal.GDT_Byte,
-            options=["COMPRESS=LZW", "TILED=YES", "PHOTOMETRIC=RGB"],
-        )
-        if output is None:
-            raise QgsProcessingException("Could not create RGB GeoTIFF.")
-        output.SetGeoTransform(transform)
-        output.SetProjection(do_layer.crs().toWkt())
-        previous = gdal.GetThreadLocalConfigOption("GDAL_TIFF_INTERNAL_MASK")
+    input_paths = [layer.source() for layer in (slope_layer, do_layer)]
+    for source in sources:
+        input_paths.extend(source.GetFileList() or [])
+    with atomic_raster_output(output_path, input_paths, feedback) as temporary:
+        output = mask_band = None
         try:
-            gdal.SetThreadLocalConfigOption("GDAL_TIFF_INTERNAL_MASK", "YES")
-            if output.CreateMaskBand(gdal.GMF_PER_DATASET) != 0:
-                raise QgsProcessingException("Could not create RGB validity mask.")
+            output = gdal.GetDriverByName("GTiff").Create(
+                temporary, width, height, 3, gdal.GDT_Byte,
+                options=["COMPRESS=LZW", "TILED=YES", "PHOTOMETRIC=RGB"],
+            )
+            if output is None:
+                raise QgsProcessingException("Could not create RGB GeoTIFF.")
+            check_raster_write(output.SetGeoTransform(transform), "write RGB geotransform")
+            check_raster_write(output.SetProjection(do_layer.crs().toWkt()), "write RGB projection")
+            previous = gdal.GetThreadLocalConfigOption("GDAL_TIFF_INTERNAL_MASK")
+            try:
+                gdal.SetThreadLocalConfigOption("GDAL_TIFF_INTERNAL_MASK", "YES")
+                if output.CreateMaskBand(gdal.GMF_PER_DATASET) != 0:
+                    raise QgsProcessingException("Could not create RGB validity mask.")
+            finally:
+                gdal.SetThreadLocalConfigOption("GDAL_TIFF_INTERNAL_MASK", previous)
+            mask_band = output.GetRasterBand(1).GetMaskBand()
+            total = ((width + 511) // 512) * ((height + 511) // 512)
+            completed = 0
+            for y in range(0, height, 512):
+                for x in range(0, width, 512):
+                    check_canceled(feedback)
+                    cols, rows = min(512, width-x), min(512, height-y)
+                    valid = np.ones((rows, cols), dtype=bool)
+                    arrays = []
+                    for source in sources:
+                        band = source.GetRasterBand(1)
+                        values = band.ReadAsArray(x, y, cols, rows).astype(np.float64)
+                        valid &= np.isfinite(values)
+                        valid &= band.GetMaskBand().ReadAsArray(x, y, cols, rows) != 0
+                        nodata = band.GetNoDataValue()
+                        if nodata is not None:
+                            valid &= values != nodata
+                        arrays.append(values)
+                    rgb = _compose_rgb(*(np.where(valid, values, 0) for values in arrays), slope_max, do_min, do_max)
+                    rgb[:, ~valid] = 0
+                    for channel in range(3):
+                        check_raster_write(output.GetRasterBand(channel+1).WriteArray(rgb[channel], x, y), "write RGB block")
+                    check_raster_write(mask_band.WriteArray(valid.astype(np.uint8) * 255, x, y), "write RGB validity mask")
+                    completed += 1
+                    if feedback is not None:
+                        feedback.setProgress(int(completed * 100 / total))
+            check_raster_write(output.FlushCache(), "flush RGB data")
         finally:
-            gdal.SetThreadLocalConfigOption("GDAL_TIFF_INTERNAL_MASK", previous)
-        mask_band = output.GetRasterBand(1).GetMaskBand()
-        for y in range(0, height, 512):
-            for x in range(0, width, 512):
-                cols, rows = min(512, width-x), min(512, height-y)
-                valid = np.ones((rows, cols), dtype=bool)
-                arrays = []
-                for source in sources:
-                    band = source.GetRasterBand(1)
-                    values = band.ReadAsArray(x, y, cols, rows).astype(np.float64)
-                    valid &= np.isfinite(values)
-                    valid &= band.GetMaskBand().ReadAsArray(x, y, cols, rows) != 0
-                    nodata = band.GetNoDataValue()
-                    if nodata is not None:
-                        valid &= values != nodata
-                    arrays.append(values)
-                rgb = _compose_rgb(*(np.where(valid, values, 0) for values in arrays),
-                                   slope_max, do_min, do_max)
-                rgb[:, ~valid] = 0
-                for channel in range(3):
-                    output.GetRasterBand(channel+1).WriteArray(rgb[channel], x, y)
-                mask_band.WriteArray(valid.astype(np.uint8) * 255, x, y)
-        output.FlushCache()
-        mask_band = None
-        output = None
-        os.replace(temporary, output_path)
-    finally:
-        mask_band = None
-        output = None
-        if os.path.exists(temporary):
-            os.remove(temporary)
+            mask_band = None
+            output = None
     return output_path
 
 
@@ -149,6 +146,12 @@ class RRIMRGBComposer(QgsProcessingAlgorithm):
             "&bull; Slope as the red multiply layer<br>"
             "&bull; Differential Openness as the grayscale base layer<br><br>"
             "User-defined display ranges are supported.<br><br>"
+            "Requires two single-band, north-up rasters with identical pixel grids and "
+            "the same valid CRS. Pixels are composed without resampling; an internal mask "
+            "preserves NoData and valid black pixels remain valid.<br><br>"
+            "The output must differ from both inputs and their VRT dependencies. "
+            "Choose a new filename when a destination has external masks, overviews or PAM sidecars. "
+            "Cancellation or a failed write preserves the previous destination.<br><br>"
             "Workflow follows <a href='https://www.researchgate.net/publication/237517308_Red_relief_image_map_New_visualization_method_for_three_dimensional_data'>Chiba et al. (2008)</a>.<br><br>"
             "-----------------------------------------------------------<br>"
             "&copy; 2025 <a href='https://linkedin.com/in/jordan-zav'><b>Zavaleta, J.</b></a><br>"
@@ -219,14 +222,11 @@ class RRIMRGBComposer(QgsProcessingAlgorithm):
         do_max = self.parameterAsDouble(parameters, self.DO_MAX, context)
         output_path = self.parameterAsOutputLayer(parameters, self.OUTPUT, context)
 
-        export_rrim_geotiff(
-            slope,
-            do,
-            output_path,
-            slope_max=slope_max,
-            do_min=do_min,
-            do_max=do_max,
-        )
+        try:
+            export_rrim_geotiff(slope, do, output_path, slope_max=slope_max,
+                               do_min=do_min, do_max=do_max, feedback=feedback)
+        except (ValueError, InterruptedError, OSError, RuntimeError) as error:
+            raise QgsProcessingException(str(error)) from error
 
         return {self.OUTPUT: output_path}
 
