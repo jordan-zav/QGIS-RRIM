@@ -103,7 +103,7 @@ Visualization Toolbox plugin.
 
 ### Development checkout
 
-Copy or link the repository as <code>QGIS_RRIM</code> inside the active QGIS profile's
+Copy or link the repository as <code>qgis_rrim</code> inside the active QGIS profile's
 <code>python/plugins</code> directory, then restart QGIS and enable the plugin.
 
 ## Use in QGIS
@@ -202,3 +202,5 @@ QGIS-RRIM is distributed under the [GNU General Public License v3.0](LICENSE).
 
 Jordan Zavaleta — GisGeo Dev<br>
 [jordanzav@gisgeo.dev](mailto:jordanzav@gisgeo.dev) · [gisgeo.dev](https://gisgeo.dev)
+
+[Documentation and release packaging](docs/README.md)

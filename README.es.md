@@ -20,7 +20,7 @@ No depende de Relief Visualization Toolbox.
 2. Abre Complementos → Administrar e instalar complementos → Instalar a partir de ZIP.
 3. Selecciona el ZIP y activa QGIS-RRIM.
 
-En desarrollo, copia o enlaza el repositorio como QGIS_RRIM dentro de
+En desarrollo, copia o enlaza el repositorio como qgis_rrim dentro de
 python/plugins del perfil activo y reinicia QGIS.
 
 ## Herramientas y uso
@@ -116,3 +116,5 @@ los parámetros, las observaciones visuales y cómo repetir la prueba.
 
 [GNU GPL v3](LICENSE). Jordan Zavaleta — GisGeo Dev.
 [Correo](mailto:jordanzav@gisgeo.dev) · [Sitio web](https://gisgeo.dev).
+
+[Documentaci?n y empaquetado de versiones](docs/README.md)

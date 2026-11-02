@@ -20,3 +20,9 @@ dist/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Generated artifacts and machine-local tooling
+.devresources*
+DEVRESOURCES_RUN.cmd
+releases/
+*.zip
