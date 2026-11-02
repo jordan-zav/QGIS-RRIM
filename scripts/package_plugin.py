@@ -14,6 +14,7 @@ root = Path(__file__).resolve().parents[1]
 metadata = configparser.ConfigParser(interpolation=None)
 metadata.read(root / "metadata.txt", encoding="utf-8")
 version = metadata["general"]["version"]
+package_name = "qgis_rrim"
 files = ["__init__.py", "qgis_rrim.py", "rrim_provider.py", "rrim_algorithm.py",
          "rrim_openness.py", "rrim_raster.py", "rrim_rgb_composer.py", "metadata.txt",
          "icon.png", "LICENSE", "README.md", "README.es.md",
@@ -27,13 +28,14 @@ with zipfile.ZipFile(archive, "x", zipfile.ZIP_DEFLATED) as stream:
         data = (root / name).read_bytes()
         if name.endswith(".py"):
             compile(data, name, "exec")
-        stream.writestr("QGIS_RRIM/" + name, data)
+        stream.writestr(package_name + "/" + name, data)
         manifest[name] = hashlib.sha256(data).hexdigest()
 with zipfile.ZipFile(archive) as stream:
     assert stream.testzip() is None
     assert len(stream.namelist()) == len(files)
+    assert {name.split("/")[0] for name in stream.namelist()} == {package_name}
     for name in files:
-        assert stream.read("QGIS_RRIM/" + name) == (root / name).read_bytes()
+        assert stream.read(package_name + "/" + name) == (root / name).read_bytes()
     assert not args.extract_to.exists(), "Use a new extraction directory"
     stream.extractall(args.extract_to)
 checksum = hashlib.sha256(archive.read_bytes()).hexdigest()
